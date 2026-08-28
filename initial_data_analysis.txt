@@ -1,0 +1,65 @@
+schema
+
+file: order_items.csv		order_items_option.csv    date_dim.csv
+
+columns:			columns:		   columns
+
+app_name (str)			order_id (str)(fk)	   date_key (date)			    	
+restaurant_id (str)		lineitem_id (str)(fk)      year (year)		
+creation_time_utc datetime	option_group_name (str)	   month (month)
+order_id (pk) 			option_name (str)	   day_of_week (str)	
+user_id (str) 			option_price (dec)	   is_weekend (boolean)
+printed_card_number (int)	option_quantity (int)	   is_holiday (boolean)
+is_loyalty (boolean)				           holiday_name (str)
+currency (str)	
+lineitem_id (fk) 
+item_category (str)
+item_name (str)
+item_price (dec)
+item_quantity (int)
+
+relationships
+
+order_items show order_id, item, price quantity
+order_items_options show option info. 
+
+order_items show order_id shows option info, price & quantity
+
+for order_id & lineitem_id in both order_items.csv & order_items_options.csv, the relationship appears to be one to one.
+
+Same situation for lineitem_id for both files.
+
+
+data quality
+
+See csv_data_integrity_report.xlsx & csv_data_integrity_info.txt in the following repository:
+
+	https://github.com/getaround2itnow/global_partners
+
+Columns for joins:
+
+
+	table				column
+
+	order_items.csv			order_id
+
+	order_items.csv			lineitem_id
+
+	order_items_option.csv		order_id
+
+	order_items_option.csv		lineitem_id
+
+columns for insights:
+
+	order_items.csv			APP_NAME
+
+	order_items.csv			ITEM_CATEGORY
+
+	order_items.csv			ITEM_NAME
+
+	order_items.csv			ITEM_PRICE
+
+	order_items_option.csv		OPTION_GROUP_NAME
+
+	order_items_option.csv		OPTION_NAME
+	

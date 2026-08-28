@@ -1,0 +1,97 @@
+========================================================================
+
+			csv data integrity info
+
+========================================================================
+
+****missing values****
+
+file			column			reason
+
+date_dim		holiday_name column	most days aren't a holiday
+
+order_items		printed_card_number	most users do not have a printed card
+
+order_items		user_id			customers who are not registered
+
+order_items		LINEITEM_ID		*footnote1
+
+order_items		ITEM_CATEGORY		*footnote1
+
+order_items		ITEM_NAME		*footnote1
+
+****corrupt values****
+
+file			column			reason
+
+order_items		CREATION_TIME_UTC	timestamp format not recognized
+
+order_items		ITEM_QUANTITY		requires non-zero number
+
+order_items_options	ORDER_ID / LINEITEM_ID	Broken reference (order_id & lineitem_id
+							combo not in order_items)
+							see footnote2 for details
+
+
+****duplicates****
+
+file			column(s)		reason
+
+order_items_options     ORDER_ID		see footnote3
+			LINEITEM_ID	
+			OPTION_GROUP_NAME
+			OPTION_NAME,
+			OPTION_PRICE,
+			OPTION_QUANTITY
+
+
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+				footnotes
+
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+footnote1:
+
+1 instance of lineitem_id, item_category, and item_name all belong 
+to the same record with the following details that are available:
+
+APP_NAME		Alton Fresh
+
+RESTAURANT_ID		5e7e35ed902ad5ac017b242b
+
+CREATION_TIME_UTC	2021-12-07T16:23:30.917Z
+
+ORDER_ID		61af8a82ffd125453e62ae37
+
+USER_ID			609d681462e498b356e72a6d
+
+IS_LOYALTY		FALSE
+
+CURRENCY		USD
+
+ITEM_PRICE		4:39
+
+QUANTITY		0
+
+There are 24 other records available for this USER_ID, ORDER_ID combo where the order actually went through for a non-zero amount of items.
+Though it's only a very small part of the total dataset, the impact of the anomaly is unknown, so making a note of it for awareness.
+
+footnote2:
+
+Investigation shows that the 28 broken reference rows have 15 unique ORDER_ID + LINEITEM_ID combinations & 14 unique ORDER_IDs.  There's no 
+parent orders for this and options for the records are normal as far as structure and context.  Could be due to a matter related to export or synchronization, or orders not being properly input to the order_items dataset.  Making a note of the irregularity for future awareness.
+
+footnote3:
+
+A total of 616 records have 2 or more duplicates, creating a total of 2,915.  Investigation found all 6 columns were duplicated, making them completely identical.
+
+Possible causes of the duplicates:
+
+1. Creation from an upstream export
+2. The same records could have been appended more than once by an ETL process.
+3. Intentional repeat but failure to supply a unique identifier.
+4. A source system emitting more than 1 option events.
+5. Another anomaly in the process of data generation.
+
+Instead of deleting the duplicated columns, I'm keeping the file "csv_data_integrity_report.xlsx " available for future reference and also to ensure that persons with a need to know can be aware.
