@@ -1,0 +1,520 @@
+
+Define & Calculate Metrics per Business Requirements:
+
+Primary Metrics:
+
+    Customer Lifetime Value
+
+	Will determine sum of all customer purchases (per a user_id) during 
+		the customer's history with the App.  Will use the following
+		SQL query as a guide:
+
+	WITH order_total_CLV AS (
+	    SELECT
+		ORDER_ID,
+		LINEITEM_ID,
+		USER_ID,
+		(ITEM_PRICE x ITEM_QUANTITY) AS total_regular_purchase
+	    FROM
+		order_items
+	    GROUP BY
+		USER_ID
+		) AS ortc,
+	option_total_CLV AS (
+	    SELECT
+		ORDER_ID,
+		LINEITEM_ID,
+		(ITEM_PRICE x ITEM_QUANTITY) AS total_options_price
+	    FROM
+		order_items_options
+	    GROUP BY
+		ORDER_ID, LINEITEM_ID,
+		) AS optc
+	SELECT
+		ortc.USER_ID,
+		optc.ORDER_ID,
+		optc.LINEITEM_ID,
+		(ortc.total_regular_purchase + optc.total_option_purchase) AS lifetime_total
+	FROM
+		order_total_CLV
+	JOIN
+		option_total_CLV
+	ON	
+		ortc.ORDER_ID + optc.ORDER_ID
+	AND
+		ortc.LINEITEM_ID + optc.LINEITEM_ID
+	GROUP BY
+		ortc.ORDER_ID, ortc.LINEITEM_ID
+
+Secondary Metrics
+
+    Locating most recent customer:
+
+	SELECT
+		USER_ID,
+		ORDER_ID,
+		LINEITEM_ID,
+		CREATION_TIME_UTC
+		(ITEM_PRICE x ITEM_QUANTITY) as total_purch_amount
+	FROM
+		(
+		SELECT oi.*,
+			ROW_NUMBER() OVER (PARTITION BY) USER_ID ORDER BY CREATION_TIME_UTC DESC) AS most_recent_purchase
+		FROM ORDER_ITEMS oi
+	) t
+	WHERE most_recent_purchase = 1
+
+    Locating the 5 most recent customers:
+
+	SELECT
+		USER_ID,
+		ORDER_ID,
+		LINEITEM_ID,
+		CREATION_TIME_UTC
+		(ITEM_PRICE x ITEM_QUANTITY) as total_purch_amount
+	FROM
+		(
+		SELECT oi.*,
+			ROW_NUMBER() OVER (PARTITION BY) USER_ID ORDER BY CREATION_TIME_UTC DESC) AS most_recent_purchase
+		FROM ORDER_ITEMS oi
+	) t
+	WHERE most_recent_purchase <= 5;
+
+    Locating the most frequent customers within the last month (for SQL Server):
+
+	SELECT
+    	    USER_ID,
+	    COUNT(DISTINCT ORDER_ID) AS number_of_purchases
+	FROM
+	    order_items
+	WHERE
+	    CREATION_TIME_UTC >= DATEADD(month, -1, GETUTCDATE())
+	GROUP BY
+	    USER_ID
+	ORDER BY
+    	    number_of_purchases DESC;
+    
+    Locating the most total amounts spent per customer within the last month (for SQL Server):
+	
+	SELECT
+	    USER_ID,
+	    SUM(ITEM_PRICE * ITEM_QUANTITY) AS total_amount_spent
+	FROM
+	    order_items
+	WHERE
+	    CREATION_TIME_UTC >= DATEADD(month, -1, CURRENT_TIMESTAMP)
+	GROUP BY
+	    USER_ID
+	ORDER BY
+	    total_amount_spent DESC;
+
+Churn Indicators:
+
+    Determining days since last order per customer within last month:
+
+	SELECT
+    		USER_ID,
+		DATEDIFF(day, MAX(CREATION_TIME_UTC), CURRENT_TIMESTAMP) AS days_since_last_order
+	FROM
+	        order_items
+	WHERE
+	    CREATION_TIME_UTC >= DATEADD(month, -1, CURRENT_TIMESTAMP)
+	GROUP BY
+	    USER_ID
+	ORDER BY
+	    total_amount_spent DESC;
+
+    Determining average gaps between orders in terms of amount spent & number of days:
+
+	WITH order_summary AS (
+	    -- Step 1: Aggregate line items to the distinct order level
+	    SELECT
+        	USER_ID,
+	        ORDER_ID,
+ 	        MIN(CREATION_TIME_UTC) AS order_time,
+        	SUM(ITEM_PRICE * ITEM_QUANTITY) AS order_total
+	    FROM
+        	order_items
+	    GROUP BY
+        	USER_ID,
+	        ORDER_ID
+	),
+
+	order_gaps AS (
+	    -- Step 2: Compare each order to the previous order for the same user
+	    SELECT
+        	USER_ID,
+	        order_time,
+	        order_total,
+        	-- Time difference in days since the previous order
+	        DATEDIFF(
+        	    day,
+	            LAG(order_time) OVER (PARTITION BY USER_ID ORDER BY order_time),
+        	    order_time
+	        ) AS days_since_prev_order,
+        	-- Difference in spend compared to the previous order
+	        order_total - LAG(order_total) OVER (PARTITION BY USER_ID ORDER BY order_time) AS spend_diff_from_prev_order
+	    FROM
+        	order_summary
+	)
+
+	-- Step 3: Compute the average gaps per user
+	SELECT
+	    USER_ID,
+	    COUNT(order_time) AS total_orders,
+	    AVG(days_since_prev_order) AS avg_days_between_orders,
+	    AVG(spend_diff_from_prev_order) AS avg_spend_diff_between_orders
+	FROM
+	    order_gaps
+	GROUP BY
+	    USER_ID
+	HAVING
+	    COUNT(order_time) > 1  -- Filters out users with only 1 order (no gaps to measure)
+	ORDER BY
+	    avg_days_between_orders ASC;
+
+    Calculating the percentage change in spending per customer for the last 5 orders:
+
+	WITH order_summary AS (
+	    -- Step 1: Aggregate line items to order-level totals
+	    SELECT
+        	USER_ID,
+	        ORDER_ID,
+	        MIN(CREATION_TIME_UTC) AS order_time,
+        	SUM(ITEM_PRICE * ITEM_QUANTITY) AS order_total
+	    FROM
+        	order_items
+	    GROUP BY
+	        USER_ID,
+	        ORDER_ID
+	),
+
+	order_history AS (
+	    -- Step 2: Determine recency and capture previous order amount
+	    SELECT
+        	USER_ID,
+	        ORDER_ID,
+        	order_time,
+	        order_total,
+        	ROW_NUMBER() OVER (PARTITION BY USER_ID ORDER BY order_time DESC) AS recency_rank,
+	        LAG(order_total) OVER (PARTITION BY USER_ID ORDER BY order_time ASC) AS prev_order_total
+	    FROM
+        	order_summary
+	)
+
+	-- Step 3: Filter for the last 5 orders and calculate percentage change
+	SELECT
+	    USER_ID,
+	    ORDER_ID,
+	    order_time,
+	    order_total,
+	    prev_order_total,
+	    ROUND(
+        	((order_total - prev_order_total) * 100.0) / NULLIF(prev_order_total, 0),
+	        2
+	    ) AS pct_change_from_prev_order
+	FROM
+	    order_history
+	WHERE
+	    recency_rank <= 5
+	ORDER BY
+	    USER_ID,
+	    order_time ASC;	
+
+Sales Trend Monitoring:
+
+    Total weekly revenue according to time of day:
+
+	Option 1: Pivoted by Daypart (One Row per Week) - outputs one row per week with separate columns for Morning, Afternoon, Evening, 			and Total revenue.
+
+	SELECT
+	    DATE_TRUNC('week', CREATION_TIME_UTC) AS order_week,
+    
+	    -- Morning: Before 12:00 (Hours 0 - 11)
+	    SUM(CASE 
+        	WHEN EXTRACT(HOUR FROM CREATION_TIME_UTC) < 12 
+	        THEN ITEM_PRICE * ITEM_QUANTITY 
+        	ELSE 0 
+	    END) AS morning_revenue,
+    
+ 	   -- Afternoon: 12:00 up to 16:00 (Hours 12 - 15)
+	    SUM(CASE 
+        	WHEN EXTRACT(HOUR FROM CREATION_TIME_UTC) >= 12 AND EXTRACT(HOUR FROM CREATION_TIME_UTC) < 16 
+	        THEN ITEM_PRICE * ITEM_QUANTITY 
+        	ELSE 0 
+	    END) AS afternoon_revenue,
+    
+  	    -- Evening / Night: 16:00 onwards (Hours 16 - 23)
+	    SUM(CASE 
+        	WHEN EXTRACT(HOUR FROM CREATION_TIME_UTC) >= 16 
+	        THEN ITEM_PRICE * ITEM_QUANTITY 
+        	ELSE 0 
+	    END) AS evening_revenue,
+    
+       	-- Total Weekly Revenue
+	SUM(ITEM_PRICE * ITEM_QUANTITY) AS total_weekly_revenue
+
+		FROM
+		    order_items
+		GROUP BY
+		    DATE_TRUNC('week', CREATION_TIME_UTC)
+		ORDER BY
+		    order_week DESC;    
+
+	Option 2: Grouped by Week and Time of Day (Long Format) each daypart as its own separate row under each week (useful for BI 						dashboard dimension breakdowns):
+		
+	SELECT
+    	    DATE_TRUNC('week', CREATION_TIME_UTC) AS order_week,
+	    CASE
+	        WHEN EXTRACT(HOUR FROM CREATION_TIME_UTC) < 12 THEN 'Morning'
+	        WHEN EXTRACT(HOUR FROM CREATION_TIME_UTC) < 16 THEN 'Afternoon'
+	        ELSE 'Evening'
+	    END AS time_of_day,
+	    SUM(ITEM_PRICE * ITEM_QUANTITY) AS total_revenue
+	FROM
+	    order_items
+	GROUP BY
+	    DATE_TRUNC('week', CREATION_TIME_UTC),
+	    CASE
+        	WHEN EXTRACT(HOUR FROM CREATION_TIME_UTC) < 12 THEN 'Morning'
+	        WHEN EXTRACT(HOUR FROM CREATION_TIME_UTC) < 16 THEN 'Afternoon'
+        	ELSE 'Evening'
+	    END
+	ORDER BY
+	    order_week DESC,
+	    MIN(EXTRACT(HOUR FROM CREATION_TIME_UTC));
+	
+    Total weekly revenue per time of day per restaurant:
+
+	SELECT
+	    RESTAURANT_ID,
+	    DATE_TRUNC('week', CREATION_TIME_UTC) AS order_week,
+    
+            -- Morning: Before 12:00
+	    SUM(CASE 
+	        WHEN EXTRACT(HOUR FROM CREATION_TIME_UTC) < 12 
+        	THEN ITEM_PRICE * ITEM_QUANTITY 
+	        ELSE 0 
+	    END) AS morning_revenue,
+    
+    	-- Afternoon: 12:00 to 16:00
+	SUM(CASE 
+            WHEN EXTRACT(HOUR FROM CREATION_TIME_UTC) >= 12 AND EXTRACT(HOUR FROM CREATION_TIME_UTC) < 16 
+	    THEN ITEM_PRICE * ITEM_QUANTITY 
+	    ELSE 0 
+	END) AS afternoon_revenue,
+    
+    	-- Evening: 16:00 onwards
+	SUM(CASE 
+            WHEN EXTRACT(HOUR FROM CREATION_TIME_UTC) >= 16 
+	    THEN ITEM_PRICE * ITEM_QUANTITY 
+            ELSE 0 
+	END) AS evening_revenue,
+    
+    	-- Total Weekly Revenue for the Restaurant
+        SUM(ITEM_PRICE * ITEM_QUANTITY) AS total_weekly_revenue
+
+    FROM
+        order_items
+    GROUP BY
+    	RESTAURANT_ID,
+	DATE_TRUNC('week', CREATION_TIME_UTC)
+    ORDER BY
+    	RESTAURANT_ID ASC,
+	order_week DESC;
+
+    Total weekly revenue per restaurant:
+
+
+    SELECT
+        RESTAURANT_ID,
+	DATE_TRUNC('week', CREATION_TIME_UTC) AS order_week,
+	SUM(ITEM_PRICE * ITEM_QUANTITY) AS total_weekly_revenue
+    FROM
+        order_items
+    GROUP BY
+        RESTAURANT_ID,
+        DATE_TRUNC('week', CREATION_TIME_UTC)
+    ORDER BY
+        RESTAURANT_ID ASC,
+        order_week DESC;
+
+    The same metric can be calculated for menu category by substituting RESTAURANT_ID with ITEM_CATEGORY
+
+Loyalty Program Impact
+
+    Calculating total orders, average, minimum, maximum and total for non-loyalty customers with no USER_ID.
+    
+
+    WITH non_loyalty_order_totals AS (
+    	-- Step 1: Calculate the total spend per distinct guest order
+	SELECT
+            ORDER_ID,
+            SUM(ITEM_PRICE * ITEM_QUANTITY) AS order_total
+	FROM
+            order_items
+	WHERE
+            IS_LOYALTY = FALSE  -- Use 0 if stored as a tinyint/boolean flag
+	GROUP BY
+            ORDER_ID
+	)
+
+	-- Step 2: Compute overall aggregate metrics across all non-loyalty orders
+ 	SELECT
+	    COUNT(ORDER_ID) AS total_non_loyalty_orders,
+	    ROUND(AVG(order_total), 2) AS avg_amount_spent_per_order,
+	    ROUND(MAX(order_total), 2) AS max_amount_spent_on_order,
+	    ROUND(MIN(order_total), 2) AS min_amount_spent_on_order,
+	    ROUND(SUM(order_total), 2) AS total_non_loyalty_revenue
+	FROM
+	    non_loyalty_order_totals;
+
+    Calculating total_orders, average purchase amount, customer lifetime value to date for non-loyalty users who have a USER_ID.
+
+    WITH non_loyalty_orders AS (
+    	-- Step 1: Calculate total spend per distinct order
+	SELECT
+            USER_ID,
+            ORDER_ID,
+     	    SUM(ITEM_PRICE * ITEM_QUANTITY) AS order_total
+	FROM
+            order_items
+        WHERE
+    	    IS_LOYALTY = FALSE          -- Adjust to 0 if stored as integer/bit
+        AND 
+	    USER_ID IS NOT NULL
+	GROUP BY
+            USER_ID,
+            ORDER_ID
+    )
+
+    -- Step 2: Aggregate to customer-level metrics
+    SELECT
+    	USER_ID,
+	COUNT(ORDER_ID) AS total_orders,
+	ROUND(AVG(order_total), 2) AS avg_purchase_amount,
+	ROUND(SUM(order_total), 2) AS lifetime_spent
+    FROM
+    	non_loyalty_orders
+    GROUP BY
+    	USER_ID
+    ORDER BY
+    	lifetime_spent DESC;
+
+    Calculating average spending, number of orders per customer and total revenue to date for loyalty customers
+
+    WITH loyalty_order_totals AS (
+	SELECT
+	    USER_ID,
+	    SUM(ITEM_PRICE * ITEM_QUANTITY) AS order_total
+	FROM
+	    order_items
+	WHERE
+	    IS_LOYALTY = TRUE
+ 	GROUP BY
+	    USER_ID
+	)
+    SELECT
+	USER_ID,
+	AVG(order_total) AS average_order_amount,
+	COUNT(USER_ID), AS number_of_orders,
+	SUM(order_total) AS total_loyalty_revenue
+    FROM
+	loyalty_order_totals
+    GROUP BY
+	USER_ID
+
+Top performing locations
+
+    Calculating total revenue, average order value and orders per week per restaurant
+
+    WITH order_totals AS (
+    	-- Step 1: Calculate the total spend and week per distinct order
+	SELECT
+            RESTAURANT_ID,
+            ORDER_ID,
+    	    DATE_TRUNC('week', MIN(CREATION_TIME_UTC)) AS order_week,
+            SUM(ITEM_PRICE * ITEM_QUANTITY) AS order_total
+        FROM
+    	    order_items
+        GROUP BY
+    	    RESTAURANT_ID,
+            ORDER_ID
+    )
+
+    -- Step 2: Aggregate to the restaurant-weekly level
+    SELECT
+    	RESTAURANT_ID,
+        order_week,
+        SUM(order_total) AS total_revenue,
+	COUNT(ORDER_ID) AS weekly_order_count,
+        ROUND(AVG(order_total), 2) AS average_order_value
+    FROM
+    	order_totals
+    GROUP BY
+    	RESTAURANT_ID,
+	order_week
+    ORDER BY
+    	RESTAURANT_ID ASC,
+        order_week DESC;
+
+Pricing & Discount Effectiveness
+
+    Calculating revenue from discounted orders vs from non-discounted orders.  Also total numbers of orders and average value of each order
+
+    WITH discounted_orders AS (
+        -- Step 1: Identify all distinct ORDER_IDs that have at least one discount option
+        SELECT DISTINCT
+    	    ORDER_ID
+        FROM
+    	    order_items_options
+        WHERE
+    	    OPTION_PRICE = 0
+    ),
+
+    order_totals AS (
+    	-- Step 2: Compute the total spend per distinct order
+        SELECT
+    	    ORDER_ID,
+            SUM(ITEM_PRICE * ITEM_QUANTITY) AS order_total
+    	FROM
+       	    order_items
+	GROUP BY
+            ORDER_ID
+    `),
+
+    order_classification AS (
+    -- Step 3: Flag each order as 'Discounted' or 'Full Price'
+    SELECT
+        ot.ORDER_ID,
+        ot.order_total,
+        CASE 
+            WHEN d.ORDER_ID IS NOT NULL THEN 'Discounted Order'
+            ELSE 'Full Price Order'
+        END AS discount_status
+    FROM
+        order_totals ot
+    LEFT JOIN
+        discounted_orders d ON ot.ORDER_ID = d.ORDER_ID
+   )
+
+    -- Step 4: Aggregate total revenue, order count, and AOV by status
+    SELECT
+        discount_status,
+        COUNT(ORDER_ID) AS total_orders,
+        ROUND(SUM(order_total), 2) AS total_revenue,
+        ROUND(AVG(order_total), 2) AS average_order_value,
+        ROUND(
+            100.0 * COUNT(ORDER_ID) / SUM(COUNT(ORDER_ID)) OVER (), 
+            2
+        ) AS pct_of_total_orders,
+        ROUND(
+            100.0 * SUM(order_total) / SUM(SUM(order_total)) OVER (), 
+            2
+        ) AS pct_of_total_revenue
+    FROM
+        order_classification
+    GROUP BY
+        discount_status;	
+
+
