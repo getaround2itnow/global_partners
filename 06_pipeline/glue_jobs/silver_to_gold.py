@@ -5,6 +5,7 @@ from pyspark.context import SparkContext
 from awsglue.context import GlueContext
 from awsglue.job import Job
 from pyspark.sql import functions as F
+from pyspark.sql.window import Window
 
 
 # ============================================================
@@ -394,16 +395,55 @@ customer_summary = (
     )
 )
 
-
 # ============================================================
-# 14. Gold dataset: order_detail
+# 14. Gold dataset: customer_ltv_daily
 #
 # Grain:
-# 1 row = 1 order + 1 line item
-#
-# This intentionally preserves line-item grain.
-# Order-level totals are not repeated here.
+# 1 row = 1 identified customer + 1 order date
 # ============================================================
+
+# First, aggregate line-item revenue and distinct orders
+# to one row per customer per date.
+customer_daily_activity = (
+    identified_orders
+    .groupBy("USER_ID", "ORDER_DATE")
+    .agg(
+        F.sum("TOTAL_LINE_REVENUE").alias("DAILY_REVENUE"),
+        F.countDistinct("ORDER_ID").alias("DAILY_ORDER_COUNT")
+    )
+)
+
+# Define a running window for each customer, ordered by date.
+customer_ltv_window = (
+    Window
+    .partitionBy("USER_ID")
+    .orderBy("ORDER_DATE")
+    .rowsBetween(
+        Window.unboundedPreceding,
+        Window.currentRow
+    )
+)
+
+# Calculate cumulative lifetime value and cumulative orders.
+customer_ltv_daily = (
+    customer_daily_activity
+    .withColumn(
+        "CUMULATIVE_LTV",
+        F.sum("DAILY_REVENUE").over(customer_ltv_window)
+    )
+    .withColumn(
+        "CUMULATIVE_ORDER_COUNT",
+        F.sum("DAILY_ORDER_COUNT").over(customer_ltv_window)
+    )
+    .select(
+        "USER_ID",
+        "ORDER_DATE",
+        "DAILY_REVENUE",
+        "CUMULATIVE_LTV",
+        "DAILY_ORDER_COUNT",
+        "CUMULATIVE_ORDER_COUNT"
+    )
+)
 
 order_detail = (
     silver_order_items
@@ -427,6 +467,43 @@ order_detail = (
     )
 )
 
+# ============================================================
+# Validate customer_ltv_daily
+# ============================================================
+
+customer_ltv_daily_count = customer_ltv_daily.count()
+
+print(
+    f"Gold customer_ltv_daily rows: "
+    f"{customer_ltv_daily_count}"
+)
+
+if customer_ltv_daily_count == 0:
+    raise ValueError(
+        "Gold customer_ltv_daily contains no rows."
+    )
+
+duplicate_customer_daily_rows = (
+    customer_ltv_daily
+    .groupBy("USER_ID", "ORDER_DATE")
+    .count()
+    .filter(F.col("count") > 1)
+)
+
+duplicate_customer_daily_count = (
+    duplicate_customer_daily_rows.count()
+)
+
+print(
+    f"Duplicate customer_ltv_daily rows: "
+    f"{duplicate_customer_daily_count}"
+)
+
+if duplicate_customer_daily_count > 0:
+    raise ValueError(
+        "Gold customer_ltv_daily contains duplicate "
+        "USER_ID + ORDER_DATE combinations."
+    )
 
 # ============================================================
 # 15. Validate Gold dataset row counts
@@ -445,6 +522,7 @@ print(f"Gold item_daily rows: {item_daily_count}")
 print(f"Gold option_daily rows: {option_daily_count}")
 print(f"Gold customer_summary rows: {customer_summary_count}")
 print(f"Gold order_detail rows: {order_detail_count}")
+print(f"Gold customer_ltv_daily rows: {customer_ltv_daily_count}")  
 
 
 # ============================================================
@@ -515,6 +593,16 @@ order_detail.write \
     .mode("overwrite") \
     .parquet(
         f"{GOLD_BASE}/order_detail/"
+    )
+
+# ============================================================
+# 17. Write customer_ltv_daily to Gold
+# ============================================================
+
+customer_ltv_daily.write \
+    .mode("overwrite") \
+    .parquet(
+        f"{GOLD_BASE}/customer_ltv_daily/"
     )
 
 

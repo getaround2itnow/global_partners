@@ -164,3 +164,23 @@ STORED AS INPUTFORMAT 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFo
 OUTPUTFORMAT 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat'
 LOCATION 's3://global-partners-project-curated/gold/order_detail/'
 TBLPROPERTIES ('classification' = 'parquet');
+
+-- ============================================================
+-- 7. Customer lifetime value by day
+-- ============================================================
+
+CREATE EXTERNAL TABLE IF NOT EXISTS `global_partners`.`customer_ltv_daily` (
+    `user_id` string,
+    `order_date` date,
+    `daily_revenue` decimal(38, 2),
+    `cumulative_ltv` decimal(38, 2),
+    `daily_order_count` bigint,
+    `cumulative_order_count` bigint
+)
+COMMENT 'Daily customer revenue and cumulative lifetime value and order counts.'
+ROW FORMAT SERDE 'org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe'
+STORED AS INPUTFORMAT 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat'
+OUTPUTFORMAT 'org.apache.hadoop.hive.ql.io.parquet.MapredParquetOutputFormat'
+LOCATION 's3://global-partners-project-curated/gold/customer_ltv_daily/'
+TBLPROPERTIES ('classification' = 'parquet');
+
